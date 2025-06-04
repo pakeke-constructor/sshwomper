@@ -117,8 +117,6 @@ class SSHLoginDialog(QDialog):
             if result == username:
                 # Create SFTP client
                 self.sftp_client = self.ssh_client.open_sftp()
-                
-                QMessageBox.information(self, 'Success', f'SSH connection established successfully!\nConnected as: {result}')
                 self.accept()
             else:
                 raise Exception("Authentication verification failed")
@@ -501,32 +499,28 @@ class DirectoryExplorer(QWidget):
 def main():
     app = QApplication(sys.argv)
     
-    try:
-        # Show login dialog
-        login_dialog = SSHLoginDialog()
-        if login_dialog.exec_() == QDialog.Accepted:
-            # Create connection info
-            connection_info = {
-                'hostname': login_dialog.hostname_input.text().strip(),
-                'username': login_dialog.username_input.text().strip(),
-                'port': int(login_dialog.port_input.text().strip() or '22')
-            }
-            
-            # Create and show directory explorer
-            explorer = DirectoryExplorer(
-                login_dialog.ssh_client,
-                login_dialog.sftp_client,
-                connection_info
-            )
-            explorer.show()
-            sys.exit(app.exec_())
-        else:
-            sys.exit(0)
-    except ImportError:
-        QMessageBox.critical(None, 'Missing Dependency', 
-                           'This application requires the paramiko library.\n\n'
-                           'Please install it using:\npip install paramiko')
-        sys.exit(1)
+    login_dialog = SSHLoginDialog()
+    if login_dialog.exec_() == QDialog.Accepted:
+        # Create connection info
+        connection_info = {
+            'hostname': login_dialog.hostname_input.text().strip(),
+            'username': login_dialog.username_input.text().strip(),
+            'port': int(login_dialog.port_input.text().strip() or '22')
+        }
+        
+        # Create and show directory explorer
+        explorer = DirectoryExplorer(
+            login_dialog.ssh_client,
+            login_dialog.sftp_client,
+            connection_info
+        )
+        explorer.show()
+        sys.exit(app.exec_())
+    else:
+        sys.exit(0)
+
+
 
 if __name__ == '__main__':
     main()
+
