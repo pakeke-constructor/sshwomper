@@ -102,6 +102,7 @@ class SSHClient:
         stdout, stderr, return_code = self.execute_command(command)
         for s in stdout.splitlines():
             self.history.append(s)
+        return stdout, stderr, return_code
     
     def get_user_command_history(self):
         return self.history
