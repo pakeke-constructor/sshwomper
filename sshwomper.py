@@ -10,7 +10,7 @@ from PyQt5.QtWidgets import (QApplication, QWidget, QVBoxLayout, QHBoxLayout,
                              QTextEdit, QSplitter, QProgressBar, QTabWidget,
                              QMainWindow, QTabBar, QStackedWidget)
 
-from PyQt5.QtCore import Qt, QThread, pyqtSignal
+from PyQt5.QtCore import Qt, QThread, pyqtSignal, QTimer
 from PyQt5.QtGui import QFont, QIcon
 import paramiko
 from datetime import datetime
@@ -909,6 +909,11 @@ class CommandLineWidget(QWidget):
         self.command_history = []
         self.history_index = -1
         self.init_ui()
+
+        self.timer = QTimer()
+        self.timer.timeout.connect(self.update_display)
+        self.timer.start(1000)  # update every 1 second automatically
+
         self.update_display()
     
     def init_ui(self):
@@ -985,9 +990,6 @@ class CommandLineWidget(QWidget):
             self.update_display()
         except Exception as e:
             self.output_text.append(f"Error: {str(e)}")
-        
-        scrollbar = self.output_text.verticalScrollBar()
-        scrollbar.setValue(scrollbar.maximum())
     
     def update_display(self):
         history = self.ssh_client.get_user_command_history()
