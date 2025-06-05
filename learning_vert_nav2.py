@@ -5,7 +5,7 @@ from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
 from PyQt5.QtCore import Qt, QSize
 from PyQt5.QtGui import QFont # Optional: for consistent font
 
-class CustomStyledNavBarDemo(QMainWindow):
+class SSHWidget(QMainWindow):
     def __init__(self):
         super().__init__()
 
@@ -38,20 +38,20 @@ class CustomStyledNavBarDemo(QMainWindow):
         self.stacked_widget = QStackedWidget()
         self.stacked_widget.setObjectName("contentArea")
 
-        self.files_widget = QLabel("Content for Files")
-        self.files_widget.setAlignment(Qt.AlignCenter)
-        self.files_widget.setFont(QFont("Arial", 14))
+        self.directory_widget = QLabel("TODO: Replace with DirectoryExplorer")
+        self.directory_widget.setAlignment(Qt.AlignCenter)
+        self.directory_widget.setFont(QFont("Arial", 14))
 
-        self.programs_widget = QLabel("Content for Programs")
-        self.programs_widget.setAlignment(Qt.AlignCenter)
-        self.programs_widget.setFont(QFont("Arial", 14))
+        self.processes_widget = QLabel("TODO: Replace with ProcessExplorer")
+        self.processes_widget.setAlignment(Qt.AlignCenter)
+        self.processes_widget.setFont(QFont("Arial", 14))
 
         self.favorites_widget = QLabel("Content for Favorites")
         self.favorites_widget.setAlignment(Qt.AlignCenter)
         self.favorites_widget.setFont(QFont("Arial", 14))
 
-        self.stacked_widget.addWidget(self.files_widget)
-        self.stacked_widget.addWidget(self.programs_widget)
+        self.stacked_widget.addWidget(self.directory_widget)
+        self.stacked_widget.addWidget(self.processes_widget)
         self.stacked_widget.addWidget(self.favorites_widget)
 
         main_layout.addWidget(self.nav_bar)
@@ -105,6 +105,6 @@ class CustomStyledNavBarDemo(QMainWindow):
 
 if __name__ == '__main__':
     app = QApplication(sys.argv)
-    demo = CustomStyledNavBarDemo()
+    demo = SSHWidget()
     demo.show()
     sys.exit(app.exec_())
