@@ -1,4 +1,5 @@
 import sys
+import json
 import os
 import stat
 import appdirs
@@ -18,64 +19,99 @@ from datetime import datetime
 
 
 
+
 class SSHClient:
     """Handles SSH connection and remote operations"""
-    
+
+    DATA_DIR = appdirs.user_data_dir("shhwomper", "shhwomper")
+    os.makedirs(DATA_DIR, exist_ok=True)
+    SAVE_PATH = os.path.join(DATA_DIR, "saved_clients.json")
+
     def __init__(self):
         self.ssh_client = None
         self.sftp_client = None
         self.current_path = None
         self.history = collections.deque(maxlen=200)
         self.connection_info = {}
-    
+
     def connect(self, hostname, username, password=None, port=22):
         """Establish SSH connection"""
         try:
             self.ssh_client = paramiko.SSHClient()
             self.ssh_client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-            
-            # Store connection info
+
             self.connection_info = {
                 'hostname': hostname,
                 'username': username,
                 'port': port
             }
-            
-            # Connect with password or key-based auth
+
             if password:
-                self.ssh_client.connect(
-                    hostname=hostname,
-                    port=port,
-                    username=username,
-                    password=password,
-                    timeout=10
-                )
-            else:
-                self.ssh_client.connect(
-                    hostname=hostname,
-                    port=port,
-                    username=username,
-                    timeout=10
-                )
-            
+                self.connection_info['password'] = password
+
+            # Connect
+            self.ssh_client.connect(
+                hostname=hostname,
+                port=port,
+                username=username,
+                password=password,
+                timeout=10
+            ) if password else self.ssh_client.connect(
+                hostname=hostname,
+                port=port,
+                username=username,
+                timeout=10
+            )
+
             # Verify connection
             stdin, stdout, stderr = self.ssh_client.exec_command('whoami')
             result = stdout.read().decode().strip()
-            
+
             if result != username:
                 raise Exception("Authentication verification failed")
-            
+
             self.sftp_client = self.ssh_client.open_sftp()
             self.current_path = self.sftp_client.getcwd() or '/'
 
             # send a keepalive message every 30 seconds so our session doesnt timeout.
             self.ssh_client.get_transport().set_keepalive(30)
-            
+
+            # Save this client if it's new
+            self._save_client(self.connection_info)
+
             return True
-            
+
         except Exception as e:
             self.disconnect()
             raise e
+
+    @classmethod
+    def _save_client(cls, info):
+        """Save client info to disk if it's not already saved"""
+        existing = cls.get_clients()
+
+        # Don't save password field for matching
+        compare_info = {k: v for k, v in info.items() if k != 'password'}
+        if compare_info not in [{k: v for k, v in c.items() if k != 'password'} for c in existing]:
+            existing.append(info)
+            try:
+                with open(cls.SAVE_PATH, 'w') as f:
+                    json.dump(existing, f, indent=2)
+            except Exception as e:
+                print(f"Failed to save client: {e}")
+
+    @classmethod
+    def get_clients(cls):
+        """Retrieve all saved SSH clients"""
+        if not os.path.exists(cls.SAVE_PATH):
+            return []
+        try:
+            with open(cls.SAVE_PATH, 'r') as f:
+                return json.load(f)
+        except Exception as e:
+            print(f"Failed to load clients: {e}")
+            return []
+
     
     def disconnect(self):
         """Close SSH and SFTP connections"""
@@ -1007,11 +1043,10 @@ class CommandLineWidget(QWidget):
 
 
 
-def get_settings():
-    pass
 
-def save_settings():
-    pass
+
+
+
 
 
 
