@@ -242,10 +242,6 @@ class SSHClient:
             if len(parts) < 11:
                 continue
 
-            command_ = parts[10]
-            if command_ == command:
-                continue # dont display usage of ps aux
-            
             try:
                 process = {
                     'user': parts[0],
@@ -391,6 +387,8 @@ class SSHWidget(QWidget):
         else:
             self.ssh_client.disconnect()
             self.close()
+
+
 
 
 class SSHLoginWidget(QWidget):
@@ -713,8 +711,6 @@ class DirectoryExplorer(QWidget):
         top_bar.addWidget(connection_label)
         top_bar.addWidget(self.path_label)
         top_bar.addStretch()
-
-        main_layout.addLayout(top_bar)
         
         # Navigation buttons
         nav_layout = QHBoxLayout()
@@ -756,9 +752,10 @@ class DirectoryExplorer(QWidget):
         input_layout.addWidget(self.go_button)
         
         # Add all layouts to main layout
-        main_layout.addLayout(nav_layout)
-        main_layout.addWidget(splitter)
-        main_layout.addLayout(input_layout)
+        main_layout.addLayout(top_bar, stretch=1)
+        main_layout.addLayout(nav_layout, stretch=1)
+        main_layout.addWidget(splitter, stretch=12)
+        main_layout.addLayout(input_layout, stretch=1)
         
         self.setLayout(main_layout)
         
