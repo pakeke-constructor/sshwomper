@@ -88,7 +88,7 @@ class SSHClient:
     @classmethod
     def _save_client(cls, info):
         """Save client info to disk if it's not already saved"""
-        existing = cls.get_clients()
+        existing = cls.get_saved_clients()
 
         # Don't save password field for matching
         compare_info = {k: v for k, v in info.items() if k != 'password'}
@@ -101,7 +101,7 @@ class SSHClient:
                 print(f"Failed to save client: {e}")
 
     @classmethod
-    def get_clients(cls):
+    def get_saved_clients(cls):
         """Retrieve all saved SSH clients"""
         if not os.path.exists(cls.SAVE_PATH):
             return []
@@ -111,8 +111,19 @@ class SSHClient:
         except Exception as e:
             print(f"Failed to load clients: {e}")
             return []
-
     
+    @classmethod
+    def start_saved_client(cls, connection_info):
+        """Creates a SSHClient for all saved clients"""
+        cl = SSHClient()
+        cl.connect(
+            connection_info["hostname"], 
+            connection_info["username"],
+            connection_info.get("password", None),
+            connection_info["port"],
+        )
+        return cl
+
     def disconnect(self):
         """Close SSH and SFTP connections"""
         if self.sftp_client:
@@ -1074,7 +1085,7 @@ class MainWindow(QMainWindow):
     def add_plus_tab(self):
         """Add the '+' tab for new connections"""
         login_widget = SSHLoginWidget()
-        login_widget.connection_successful.connect(self.on_connection_successful)
+        login_widget.connection_successful.connect(self.create_ssh_widget)
         
         # Remove existing '+' tab if present
         for i in range(self.tabs.count()):
@@ -1089,7 +1100,7 @@ class MainWindow(QMainWindow):
         # Remove close button from '+' tab
         self.tabs.tabBar().setTabButton(tab_index, QTabBar.RightSide, None)
 
-    def on_connection_successful(self, ssh_client):
+    def create_ssh_widget(self, ssh_client):
         """Handle successful SSH connection"""
         current_index = self.tabs.currentIndex()
         directory_explorer = SSHWidget(ssh_client)
@@ -1142,6 +1153,11 @@ def main():
     app = QApplication(sys.argv)
     
     main_window = MainWindow()
+
+    for conn_info in SSHClient.get_saved_clients():
+        sshclient = SSHClient.start_saved_client(conn_info)
+        main_window.create_ssh_widget(sshclient)
+
     main_window.show()
     
     sys.exit(app.exec_())
