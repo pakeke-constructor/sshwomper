@@ -14,7 +14,7 @@ from PyQt5.QtWidgets import (QApplication, QWidget, QVBoxLayout, QHBoxLayout,
                              QTextEdit, QSplitter, QProgressBar, QTabWidget,
                              QMainWindow, QTabBar, QStackedWidget)
 
-from PyQt5.QtCore import Qt, QThread, pyqtSignal, QTimer
+from PyQt5.QtCore import Qt, QThread, pyqtSignal, QTimer, QObject
 from PyQt5.QtGui import QFont, QIcon
 import paramiko
 from datetime import datetime
@@ -447,107 +447,504 @@ class SSHClient:
 
 
 
-class SSHWidget(QWidget):
-    def __init__(self, ssh_client):
-        super().__init__()
-        self.ssh_client = ssh_client
-        self.init_ui()
-
-    def init_ui(self):
-        main_layout = QHBoxLayout(self)
-        main_layout.setContentsMargins(5, 5, 5, 5)
-
-        self.nav_bar = QListWidget()
-        self.nav_bar.setObjectName("navBar")
-        self.nav_bar.setFixedWidth(150)
-        self.nav_bar.setMovement(QListWidget.Static)
-        self.nav_bar.setSpacing(2)
-
-        nav_items = ["Files", "Processes"]
-        for text in nav_items:
-            item = QListWidgetItem(text)
-            item.setTextAlignment(Qt.AlignCenter)
-            self.nav_bar.addItem(item)
-
-        self.stacked_widget = QStackedWidget()
-        self.stacked_widget.setObjectName("contentArea")
-
-        self.directory_widget = self.create_explorer_with_terminal(DirectoryExplorer(self.ssh_client))
-        self.processes_widget = self.create_explorer_with_terminal(ProcessExplorer(self.ssh_client))
-
-        self.stacked_widget.addWidget(self.directory_widget)
-        self.stacked_widget.addWidget(self.processes_widget)
-
-        main_layout.addWidget(self.nav_bar)
-        main_layout.addWidget(self.stacked_widget, 1)
-
-        self.nav_bar.currentRowChanged.connect(self.stacked_widget.setCurrentIndex)
-        self.apply_stylesheet()
-
-        if self.nav_bar.count() > 0:
-            self.nav_bar.setCurrentRow(0)
-
-    def create_explorer_with_terminal(self, explorer_widget):
-        container = QWidget()
-        layout = QVBoxLayout(container)
-        layout.setContentsMargins(0, 0, 0, 0)
+class ShellReaderThread(QThread):
+    """QThread for reading shell output in background"""
+    
+    # Signals for communicating with main thread
+    output_received = pyqtSignal(str)  # Raw output
+    filtered_output_received = pyqtSignal(str)  # Filtered output
+    error_occurred = pyqtSignal(str)  # Error messages
+    
+    def __init__(self, shell, parent=None):
+        super().__init__(parent)
+        self.shell = shell
+        self.running = False
+        self._ansi_escape = re.compile(r'\x1b(?:\[[?0-9;]*[a-zA-Z]|\][0-9];.*?\x07|[()][AB012])')
+    
+    def run(self):
+        """Main thread execution"""
+        self.running = True
         
-        from PyQt5.QtWidgets import QSplitter
-        splitter = QSplitter(Qt.Vertical)
-        
-        splitter.addWidget(explorer_widget)
-        
-        terminal_widget = CommandLineWidget(self.ssh_client)
-        splitter.addWidget(terminal_widget)
-        
-        splitter.setSizes([600, 200])
-        splitter.setCollapsible(0, False)
-        splitter.setCollapsible(1, True)
-        
-        layout.addWidget(splitter)
-        return container
+        while self.running and self.shell:
+            try:
+                if self.shell.recv_ready():
+                    output = self.shell.recv(1024).decode('utf-8', errors='ignore')
+                    
+                    # Emit raw output
+                    self.output_received.emit(output)
+                    
+                    # Filter ANSI escape sequences and emit filtered output
+                    filtered_output = self._filter_ansi(output)
+                    if filtered_output:
+                        self.filtered_output_received.emit(filtered_output)
+                
+                # Small delay to prevent excessive CPU usage
+                self.msleep(10)  # QThread's msleep method
+                
+            except Exception as e:
+                if "timed out" not in str(e).lower():
+                    self.error_occurred.emit(f"Shell reader error: {e}")
+                    break
+    
+    def stop(self):
+        """Stop the thread gracefully"""
+        self.running = False
+    
+    def _filter_ansi(self, text):
+        """Filter ANSI escape sequences from text"""
+        return self._ansi_escape.sub('', text)
 
-    def apply_stylesheet(self):
-        style = """
-            QListWidget#navBar {
-                background-color: #2d2d2d;
-                border: 1px solid #444444;
-                outline: 0;
+
+class SSHClient(QObject):
+    """Handles SSH connection and remote operations using QThread"""
+    
+    # Signals for shell events
+    shell_output = pyqtSignal(str)  # Filtered shell output
+    shell_error = pyqtSignal(str)   # Shell errors
+    shell_started = pyqtSignal()    # Shell session started
+    shell_stopped = pyqtSignal()    # Shell session stopped
+    
+    DATA_DIR = appdirs.user_data_dir("shhwomper", "shhwomper")
+    os.makedirs(DATA_DIR, exist_ok=True)
+    SAVE_PATH = os.path.join(DATA_DIR, "saved_clients.json")
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.ssh_client = None
+        self.sftp_client = None
+        self.current_path = None
+        self.history = collections.deque(maxlen=200)
+        self.connection_info = {}
+        
+        # Interactive shell support with QThread
+        self.shell = None
+        self.shell_thread = None
+        self.shell_running = False
+        self.shell_buffer = ""
+        
+        # Output callbacks (kept for backward compatibility)
+        self.output_callbacks = []
+
+    def connect(self, hostname, username, password=None, port=22):
+        """Establish SSH connection"""
+        try:
+            self.ssh_client = paramiko.SSHClient()
+            self.ssh_client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+
+            self.connection_info = {
+                'hostname': hostname,
+                'username': username,
+                'port': port
             }
 
-            QListWidget#navBar::item {
-                background-color: #3d3d3d;
-                color: #ffffff;
-                padding: 12px 8px;
-                margin: 2px 4px;
-                border: 1px solid #555555;
-                border-radius: 5px;
-            }
+            if password:
+                self.connection_info['password'] = password
 
-            QListWidget#navBar::item:hover {
-                background-color: #4d4d4d;
-                border: 1px solid #666666;
-            }
+            # Connect
+            if password:
+                self.ssh_client.connect(
+                    hostname=hostname,
+                    port=port,
+                    username=username,
+                    password=password,
+                    timeout=10
+                )
+            else:
+                self.ssh_client.connect(
+                    hostname=hostname,
+                    port=port,
+                    username=username,
+                    timeout=10
+                )
 
-            QListWidget#navBar::item:selected {
-                background-color: #0078d4;
-                color: white;
-                border: 1px solid #005a9e;
-            }
+            # Verify connection
+            stdin, stdout, stderr = self.ssh_client.exec_command('whoami')
+            result = stdout.read().decode().strip()
 
-            QStackedWidget#contentArea {
-                background-color: #ffffff;
-                border: 1px solid #cccccc;
-            }
+            if result != username:
+                raise Exception("Authentication verification failed")
+
+            self.sftp_client = self.ssh_client.open_sftp()
+            self.current_path = self.sftp_client.getcwd() or '/'
+
+            # Send a keepalive message every 30 seconds so our session doesn't timeout
+            self.ssh_client.get_transport().set_keepalive(30)
+
+            # Save this client if it's new
+            self._save_client(self.connection_info)
+
+            return True
+
+        except Exception as e:
+            self.disconnect()
+            raise e
+
+    def start_interactive_shell(self):
+        """Start an interactive shell session using QThread"""
+        if not self.ssh_client:
+            raise Exception("Not connected to SSH server")
+        
+        if self.shell_running:
+            return  # Already running
+        
+        try:
+            self.shell = self.ssh_client.invoke_shell()
+            self.shell.settimeout(0.1)
+            self.shell_running = True
+            
+            # Create and start shell reading thread
+            self.shell_thread = ShellReaderThread(self.shell, self)
+            
+            # Connect thread signals to our methods
+            self.shell_thread.filtered_output_received.connect(self._on_shell_output)
+            self.shell_thread.error_occurred.connect(self._on_shell_error)
+            self.shell_thread.finished.connect(self._on_shell_thread_finished)
+            
+            # Start the thread
+            self.shell_thread.start()
+            
+            # Emit signal that shell started
+            self.shell_started.emit()
+            
+            return True
+            
+        except Exception as e:
+            self.shell_running = False
+            raise e
+
+    def stop_interactive_shell(self):
+        """Stop the interactive shell session"""
+        self.shell_running = False
+        
+        # Stop the thread gracefully
+        if self.shell_thread and self.shell_thread.isRunning():
+            self.shell_thread.stop()
+            self.shell_thread.wait(1000)  # Wait up to 1 second for thread to finish
+            
+            if self.shell_thread.isRunning():
+                self.shell_thread.terminate()  # Force terminate if still running
+                self.shell_thread.wait()
+        
+        # Clean up shell
+        if self.shell:
+            try:
+                self.shell.close()
+            except:
+                pass
+            self.shell = None
+        
+        self.shell_thread = None
+        
+        # Emit signal that shell stopped
+        self.shell_stopped.emit()
+
+    def send_to_shell(self, command):
+        """Send a command to the interactive shell"""
+        if not self.shell or not self.shell_running:
+            raise Exception("Interactive shell not running")
+        
+        try:
+            self.shell.send(command + '\n')
+            self.history.append(command)
+        except Exception as e:
+            raise Exception(f"Failed to send command: {e}")
+
+    def add_output_callback(self, callback):
+        """Add a callback function to receive shell output (backward compatibility)"""
+        self.output_callbacks.append(callback)
+
+    def remove_output_callback(self, callback):
+        """Remove an output callback (backward compatibility)"""
+        if callback in self.output_callbacks:
+            self.output_callbacks.remove(callback)
+
+    def _on_shell_output(self, output):
+        """Handle shell output from QThread"""
+        # Add to buffer and history
+        self.shell_buffer += output
+        for line in output.splitlines():
+            if line.strip():
+                self.history.append(line.strip())
+        
+        # Call legacy output callbacks for backward compatibility
+        for callback in self.output_callbacks:
+            try:
+                callback(output)
+            except Exception as e:
+                self.shell_error.emit(f"Output callback error: {e}")
+        
+        # Emit signal for Qt-based handlers
+        self.shell_output.emit(output)
+
+    def _on_shell_error(self, error):
+        """Handle shell errors from QThread"""
+        self.shell_error.emit(error)
+
+    def _on_shell_thread_finished(self):
+        """Handle shell thread finished"""
+        if self.shell_running:
+            # Thread finished unexpectedly
+            self.shell_running = False
+            self.shell_stopped.emit()
+
+    def get_shell_buffer(self):
+        """Get the current shell output buffer"""
+        return self.shell_buffer
+
+    def clear_shell_buffer(self):
+        """Clear the shell output buffer"""
+        self.shell_buffer = ""
+
+    def is_shell_running(self):
+        """Check if interactive shell is running"""
+        return self.shell_running and self.shell is not None
+
+    @classmethod
+    def _save_client(cls, info):
+        """Save client info to disk if it's not already saved"""
+        existing = cls.get_saved_clients()
+
+        # Don't save password field for matching
+        compare_info = {k: v for k, v in info.items() if k != 'password'}
+        if compare_info not in [{k: v for k, v in c.items() if k != 'password'} for c in existing]:
+            existing.append(info)
+            try:
+                with open(cls.SAVE_PATH, 'w') as f:
+                    json.dump(existing, f, indent=2)
+            except Exception as e:
+                print(f"Failed to save client: {e}")
+
+    @classmethod
+    def get_saved_clients(cls):
+        """Retrieve all saved SSH clients"""
+        if not os.path.exists(cls.SAVE_PATH):
+            return []
+        try:
+            with open(cls.SAVE_PATH, 'r') as f:
+                return json.load(f)
+        except Exception as e:
+            print(f"Failed to load clients: {e}")
+            return []
+    
+    @classmethod
+    def start_saved_client(cls, connection_info, parent=None):
+        """Creates a SSHClient for all saved clients"""
+        cl = cls(parent)
+        cl.connect(
+            connection_info["hostname"], 
+            connection_info["username"],
+            connection_info.get("password", None),
+            connection_info["port"],
+        )
+        return cl
+
+    def disconnect(self):
+        """Close SSH and SFTP connections"""
+        # Stop interactive shell first
+        self.stop_interactive_shell()
+        
+        if self.sftp_client:
+            try:
+                self.sftp_client.close()
+            except:
+                pass
+            self.sftp_client = None
+        
+        if self.ssh_client:
+            try:
+                self.ssh_client.close()
+            except:
+                pass
+            self.ssh_client = None
+    
+    def execute_user_command(self, command):
         """
-        self.setStyleSheet(style)
+        Executes a user-command and returns output, error, and return code.
+        This will put the output in the shell
+        """
+        self.history.append(command)
+        stdout, stderr, return_code = self.execute_command(command)
+        for s in stdout.splitlines():
+            self.history.append(s)
+        return stdout, stderr, return_code
+    
+    def get_user_command_history(self):
+        return self.history
 
-    def disconnect_tab(self, widget):
-        if hasattr(self, 'parent_window'):
-            self.parent_window.disconnect_tab(self)
+    def execute_command(self, command):
+        """Execute a command and return output, error, and return code"""
+        if not self.ssh_client:
+            raise Exception("Not connected to SSH server")
+        
+        try:
+            stdin, stdout, stderr = self.ssh_client.exec_command(command)
+            
+            stdout_data = stdout.read().decode().strip()
+            stderr_data = stderr.read().decode().strip()
+            return_code = stdout.channel.recv_exit_status()
+            
+            return stdout_data, stderr_data, return_code
+            
+        except Exception as e:
+            return "", str(e), 1
+
+    def list_directory(self, path=None):
+        """List directory contents using ls command"""
+        if not self.ssh_client:
+            raise Exception("Not connected to SSH server")
+        
+        target_path = path or self.current_path
+        
+        # Use ls -la for detailed listing
+        command = f"ls -la '{target_path}'"
+        stdout, stderr, return_code = self.execute_command(command)
+        
+        if return_code != 0:
+            raise Exception(f"Failed to list directory: {stderr}")
+        
+        # Parse ls output
+        items = []
+        lines = stdout.split('\n')
+        
+        for line in lines[1:]:  # Skip first line (total)
+            if not line.strip():
+                continue
+            
+            # Parse ls -la output
+            parts = line.split()
+            if len(parts) < 9:
+                continue
+            
+            permissions = parts[0]
+            size = parts[4]
+            name = ' '.join(parts[8:])  # Handle names with spaces
+            
+            # Skip current and parent directory entries
+            if name in ['.', '..']:
+                continue
+            
+            # Determine file type
+            if permissions.startswith('d'):
+                file_type = 'directory'
+            elif permissions.startswith('l'):
+                file_type = 'link'
+            elif 'x' in permissions:
+                file_type = 'executable'
+            else:
+                file_type = 'file'
+            
+            items.append({
+                'name': name,
+                'type': file_type,
+                'permissions': permissions,
+                'size': size,
+                'raw_line': line
+            })
+        
+        return items
+    
+    def change_directory(self, path):
+        """Change current directory using cd command"""
+        if not self.ssh_client:
+            raise Exception("Not connected to SSH server")
+        
+        # Handle relative paths
+        if path == '..':
+            new_path = os.path.dirname(self.current_path.rstrip('/'))
+            if not new_path:
+                new_path = '/'
+        elif path.startswith('/'):
+            new_path = path
         else:
-            self.ssh_client.disconnect()
-            self.close()
+            new_path = os.path.join(self.current_path, path)
+        
+        # Normalize path
+        new_path = os.path.normpath(new_path).replace('\\', '/')
+        if not new_path.startswith('/'):
+            new_path = '/' + new_path
+        
+        # Test directory access
+        command = f"cd '{new_path}' && pwd"
+        stdout, stderr, return_code = self.execute_command(command)
+        
+        if return_code != 0:
+            raise Exception(f"Cannot access directory: {stderr}")
+        
+        # Update current path
+        self.current_path = stdout.strip()
+        
+        # Also update SFTP client path
+        if self.sftp_client:
+            try:
+                self.sftp_client.chdir(self.current_path)
+            except:
+                pass  # SFTP path update is not critical
+        
+        return self.current_path
+    
+    def get_processes(self):
+        """Get top CPU-consuming processes"""
+        if not self.ssh_client:
+            raise Exception("Not connected to SSH server")
+        
+        command = "ps aux --sort=-%cpu | head -n 15"
+        stdout, stderr, return_code = self.execute_command(command)
+        
+        if return_code != 0:
+            raise Exception(f"Failed to get processes: {stderr}")
+        
+        processes = []
+        lines = stdout.split('\n')
+        
+        # Skip header line
+        for line in lines[1:]:
+            if not line.strip():
+                continue
+            
+            # Parse ps aux output
+            parts = line.split(None, 10)  # Split on whitespace, max 11 parts
+            if len(parts) < 11:
+                continue
+
+            try:
+                process = {
+                    'user': parts[0],
+                    'pid': parts[1],
+                    'cpu': float(parts[2]),
+                    'mem': float(parts[3]),
+                    'vsz': parts[4],
+                    'rss': parts[5],
+                    'tty': parts[6],
+                    'stat': parts[7],
+                    'start': parts[8],
+                    'time': parts[9],
+                    'command': parts[10]
+                }
+                processes.append(process)
+            except (ValueError, IndexError):
+                continue
+        
+        return processes
+    
+    def get_home_directory(self):
+        """Get user's home directory"""
+        if not self.ssh_client:
+            raise Exception("Not connected to SSH server")
+        
+        stdout, stderr, return_code = self.execute_command('echo $HOME')
+        if return_code == 0 and stdout:
+            return stdout.strip()
+        
+        # Fallback
+        return f"/home/{self.connection_info.get('username', '')}"
+    
+    def get_current_path(self):
+        """Get current working directory"""
+        return self.current_path
+    
+    def is_connected(self):
+        """Check if SSH connection is active"""
+        return self.ssh_client is not None and self.ssh_client.get_transport() is not None
 
 
 
@@ -1088,6 +1485,7 @@ class CommandLineWidget(QWidget):
         
         # Create terminal text area
         self.terminal = QTextEdit()
+        self.terminal.setReadOnly(True)  # Prevent direct editing
         self.terminal.setFont(QFont("Courier", 10))
         self.terminal.setStyleSheet("""
             QTextEdit {
@@ -1109,11 +1507,15 @@ class CommandLineWidget(QWidget):
     
     def append_output(self, text):
         """Handle output from the interactive shell"""
+        # Temporarily allow editing to insert text
+        self.terminal.setReadOnly(False)
         cursor = self.terminal.textCursor()
         cursor.movePosition(QTextCursor.End)
         cursor.insertText(text)
         self.terminal.setTextCursor(cursor)
         self.terminal.ensureCursorVisible()
+        # Set back to read-only
+        self.terminal.setReadOnly(True)
     
     def eventFilter(self, obj, event):
         if obj == self.terminal and event.type() == event.KeyPress:
@@ -1259,7 +1661,7 @@ class MainWindow(QMainWindow):
     def create_ssh_widget(self, ssh_client):
         """Handle successful SSH connection"""
         current_index = self.tabs.currentIndex()
-        directory_explorer = SSHWidget(ssh_client)
+        directory_explorer = DirectoryExplorer(ssh_client)
         
         conn_info = ssh_client.connection_info
         tab_title = f"{conn_info['username']}@{conn_info['hostname']}"
