@@ -1068,282 +1068,148 @@ from PyQt5.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QTextEdit, QLineE
 from PyQt5.QtCore import QTimer, Qt
 from PyQt5.QtGui import QFont, QTextCursor
 
+
 class CommandLineWidget(QWidget):
     def __init__(self, ssh_client):
         super().__init__()
         self.ssh_client = ssh_client
-        self.command_history = []
-        self.history_index = -1
         self.command_buffer = ""
         self.init_ui()
         
         # Start interactive shell
         try:
             self.ssh_client.start_interactive_shell()
-            self.ssh_client.add_output_callback(self.handle_shell_output)
+            self.ssh_client.add_output_callback(self.append_output)
         except Exception as e:
             self.append_output(f"Failed to start interactive shell: {str(e)}\n")
     
     def init_ui(self):
         layout = QVBoxLayout()
         
-        # Create terminal text area (similar to SSHTerminal)
-        self.output_text = QTextEdit()
-        self.output_text.setReadOnly(False)  # Allow interaction for vi, etc.
-        self.output_text.setFont(QFont('Courier', 10))
-        self.output_text.setStyleSheet("""
+        # Create terminal text area
+        self.terminal = QTextEdit()
+        self.terminal.setFont(QFont("Courier", 10))
+        self.terminal.setStyleSheet("""
             QTextEdit {
-                background-color: #1e1e1e; 
+                background-color: #1e1e1e;
                 color: #ffffff;
                 border: none;
                 padding: 5px;
             }
         """)
-        layout.addWidget(self.output_text)
         
-        # Input area (keep for command history navigation)
-        input_layout = QHBoxLayout()
-        
-        conn_info = self.ssh_client.connection_info
-        prompt_text = f"{conn_info['username']}@{conn_info['hostname']}:$ "
-        self.prompt_label = QLabel(prompt_text)
-        self.prompt_label.setFont(QFont('Courier', 10))
-        self.prompt_label.setStyleSheet("color: #00ff00; background-color: #1e1e1e; padding: 5px;")
-        
-        self.command_input = QLineEdit()
-        self.command_input.setFont(QFont('Courier', 10))
-        self.command_input.setStyleSheet("""
-            QLineEdit {
-                background-color: #1e1e1e; 
-                color: #ffffff; 
-                border: 1px solid #444; 
-                padding: 5px;
-            }
-        """)
-        self.command_input.returnPressed.connect(self.execute_command)
-        
-        input_layout.addWidget(self.prompt_label)
-        input_layout.addWidget(self.command_input)
-        
-        layout.addLayout(input_layout)
+        layout.addWidget(self.terminal)
         self.setLayout(layout)
         
-        # Install event filters for both widgets
-        self.command_input.installEventFilter(self)
-        self.output_text.installEventFilter(self)
+        # Set focus to terminal
+        self.terminal.setFocus()
         
-        # Set focus to output text for direct terminal interaction
-        self.output_text.setFocus()
-    
-    def handle_shell_output(self, text):
-        """Handle output from the interactive shell"""
-        self.append_output(text)
+        # Install event filter to capture key presses
+        self.terminal.installEventFilter(self)
     
     def append_output(self, text):
-        """Append text to the terminal output"""
-        cursor = self.output_text.textCursor()
+        """Handle output from the interactive shell"""
+        cursor = self.terminal.textCursor()
         cursor.movePosition(QTextCursor.End)
         cursor.insertText(text)
-        self.output_text.setTextCursor(cursor)
-        self.output_text.ensureCursorVisible()
+        self.terminal.setTextCursor(cursor)
+        self.terminal.ensureCursorVisible()
     
     def eventFilter(self, obj, event):
-        if event.type() == event.KeyPress:
+        if obj == self.terminal and event.type() == event.KeyPress:
             key = event.key()
             text = event.text()
             
-            # Handle events from command input (history navigation)
-            if obj == self.command_input:
-                if key == Qt.Key_Up:
-                    self.navigate_history(-1)
-                    return True
-                elif key == Qt.Key_Down:
-                    self.navigate_history(1)
-                    return True
-                elif key == Qt.Key_Tab:
-                    # Switch focus to main terminal
-                    self.output_text.setFocus()
-                    return True
-            
-            # Handle events from main terminal (like SSHTerminal)
-            elif obj == self.output_text:
-                # Handle Enter key
-                if key == Qt.Key_Return or key == Qt.Key_Enter:
-                    if self.ssh_client.is_shell_running():
-                        self.ssh_client.send_to_shell(self.command_buffer)
-                        if self.command_buffer.strip():
-                            self.command_history.append(self.command_buffer.strip())
-                            self.history_index = len(self.command_history)
-                        self.command_buffer = ""
-                    return True
-                
-                # Handle Backspace
-                elif key == Qt.Key_Backspace:
-                    if self.command_buffer and self.ssh_client.is_shell_running():
-                        self.command_buffer = self.command_buffer[:-1]
-                        # Send backspace to shell
-                        try:
-                            self.ssh_client.shell.send('\b \b')
-                        except:
-                            pass
-                    return True
-                
-                # Handle regular characters
-                elif len(text) == 1 and text.isprintable():
-                    if self.ssh_client.is_shell_running():
-                        self.command_buffer += text
-                        # Send character directly to shell
-                        try:
-                            self.ssh_client.shell.send(text)
-                        except:
-                            pass
-                    return True
-                
-                # Handle special keys (arrows, etc.)
-                elif key in [Qt.Key_Up, Qt.Key_Down, Qt.Key_Left, Qt.Key_Right]:
-                    if self.ssh_client.is_shell_running():
-                        try:
-                            if key == Qt.Key_Up:
-                                self.ssh_client.shell.send('\033[A')
-                            elif key == Qt.Key_Down:
-                                self.ssh_client.shell.send('\033[B')
-                            elif key == Qt.Key_Left:
-                                self.ssh_client.shell.send('\033[D')
-                            elif key == Qt.Key_Right:
-                                self.ssh_client.shell.send('\033[C')
-                        except:
-                            pass
-                    return True
-                
-                # Handle Ctrl+C
-                elif key == Qt.Key_C and event.modifiers() == Qt.ControlModifier:
-                    if self.ssh_client.is_shell_running():
-                        try:
-                            self.ssh_client.shell.send('\003')  # Send Ctrl+C
-                        except:
-                            pass
-                        self.command_buffer = ""
-                    return True
-                
-                # Handle Ctrl+D (EOF)
-                elif key == Qt.Key_D and event.modifiers() == Qt.ControlModifier:
-                    if self.ssh_client.is_shell_running():
-                        try:
-                            self.ssh_client.shell.send('\004')  # Send Ctrl+D
-                        except:
-                            pass
-                    return True
-                
-                # Handle Tab for completion
-                elif key == Qt.Key_Tab:
-                    if self.ssh_client.is_shell_running():
-                        try:
-                            self.ssh_client.shell.send('\t')
-                        except:
-                            pass
-                    return True
-                
-                # Handle Escape
-                elif key == Qt.Key_Escape:
-                    if self.ssh_client.is_shell_running():
-                        try:
-                            self.ssh_client.shell.send('\033')
-                        except:
-                            pass
-                    return True
-                
+            # Handle Enter key
+            if key == Qt.Key_Return or key == Qt.Key_Enter:
+                if self.ssh_client.is_shell_running():
+                    self.ssh_client.send_to_shell(self.command_buffer)
+                self.command_buffer = ""
                 return True
+            
+            # Handle Backspace
+            elif key == Qt.Key_Backspace:
+                if self.command_buffer and self.ssh_client.is_shell_running():
+                    self.command_buffer = self.command_buffer[:-1]
+                    try:
+                        self.ssh_client.shell.send('\b \b')
+                    except:
+                        pass
+                return True
+            
+            # Handle regular characters
+            elif len(text) == 1 and text.isprintable():
+                if self.ssh_client.is_shell_running():
+                    self.command_buffer += text
+                    try:
+                        self.ssh_client.shell.send(text)
+                    except:
+                        pass
+                return True
+            
+            # Handle special keys (arrows, etc.)
+            elif key in [Qt.Key_Up, Qt.Key_Down, Qt.Key_Left, Qt.Key_Right]:
+                if self.ssh_client.is_shell_running():
+                    try:
+                        if key == Qt.Key_Up:
+                            self.ssh_client.shell.send('\033[A')
+                        elif key == Qt.Key_Down:
+                            self.ssh_client.shell.send('\033[B')
+                        elif key == Qt.Key_Left:
+                            self.ssh_client.shell.send('\033[D')
+                        elif key == Qt.Key_Right:
+                            self.ssh_client.shell.send('\033[C')
+                    except:
+                        pass
+                return True
+            
+            # Handle Ctrl+C
+            elif key == Qt.Key_C and event.modifiers() == Qt.ControlModifier:
+                if self.ssh_client.is_shell_running():
+                    try:
+                        self.ssh_client.shell.send('\003')  # Send Ctrl+C
+                    except:
+                        pass
+                    self.command_buffer = ""
+                return True
+            
+            # Handle Ctrl+D (EOF)
+            elif key == Qt.Key_D and event.modifiers() == Qt.ControlModifier:
+                if self.ssh_client.is_shell_running():
+                    try:
+                        self.ssh_client.shell.send('\004')  # Send Ctrl+D
+                    except:
+                        pass
+                return True
+            
+            # Handle Tab for completion
+            elif key == Qt.Key_Tab:
+                if self.ssh_client.is_shell_running():
+                    try:
+                        self.ssh_client.shell.send('\t')
+                    except:
+                        pass
+                return True
+            
+            # Handle Escape
+            elif key == Qt.Key_Escape:
+                if self.ssh_client.is_shell_running():
+                    try:
+                        self.ssh_client.shell.send('\033')
+                    except:
+                        pass
+                return True
+            
+            return True
         
         return super().eventFilter(obj, event)
-    
-    def navigate_history(self, direction):
-        """Navigate through command history"""
-        if not self.command_history:
-            return
-        
-        self.history_index += direction
-        
-        if self.history_index < 0:
-            self.history_index = 0
-        elif self.history_index >= len(self.command_history):
-            self.history_index = len(self.command_history) - 1
-        
-        if 0 <= self.history_index < len(self.command_history):
-            self.command_input.setText(self.command_history[self.history_index])
-    
-    def execute_command(self):
-        """Execute command from the input line"""
-        command = self.command_input.text().strip()
-        if not command:
-            return
-        
-        # Add to history
-        self.command_history.append(command)
-        self.history_index = len(self.command_history)
-        
-        # Clear input
-        self.command_input.clear()
-        
-        # Send to interactive shell if available
-        if self.ssh_client.is_shell_running():
-            try:
-                self.ssh_client.send_to_shell(command)
-            except Exception as e:
-                self.append_output(f"Error sending command: {str(e)}\n")
-        else:
-            # Fallback to execute_command if shell not running
-            try:
-                conn_info = self.ssh_client.connection_info
-                current_path = self.ssh_client.get_current_path() or "~"
-                prompt = f"{conn_info['username']}@{conn_info['hostname']}:{current_path}$ {command}\n"
-                self.append_output(prompt)
-                
-                stdout, stderr, return_code = self.ssh_client.execute_command(command)
-                
-                if stdout:
-                    self.append_output(stdout + "\n")
-                if stderr:
-                    self.append_output(f"Error: {stderr}\n")
-                    
-            except Exception as e:
-                self.append_output(f"Error: {str(e)}\n")
-    
-    def update_prompt(self):
-        """Update the prompt display"""
-        conn_info = self.ssh_client.connection_info
-        current_path = self.ssh_client.get_current_path() or "~"
-        prompt_text = f"{conn_info['username']}@{conn_info['hostname']}:{current_path}$ "
-        self.prompt_label.setText(prompt_text)
     
     def closeEvent(self, event):
         """Clean up when widget is closed"""
         if self.ssh_client.is_shell_running():
-            self.ssh_client.remove_output_callback(self.handle_shell_output)
+            self.ssh_client.remove_output_callback(self.append_output)
             self.ssh_client.stop_interactive_shell()
         event.accept()
-    
-    def restart_shell(self):
-        """Restart the interactive shell"""
-        if self.ssh_client.is_shell_running():
-            self.ssh_client.stop_interactive_shell()
-        
-        try:
-            self.ssh_client.start_interactive_shell()
-            self.ssh_client.add_output_callback(self.handle_shell_output)
-            self.append_output("Interactive shell restarted.\n")
-        except Exception as e:
-            self.append_output(f"Failed to restart shell: {str(e)}\n")
-    
-    def send_interrupt(self):
-        """Send Ctrl+C to the shell"""
-        if self.ssh_client.is_shell_running():
-            try:
-                self.ssh_client.shell.send('\003')
-                self.command_buffer = ""
-            except Exception as e:
-                self.append_output(f"Failed to send interrupt: {str(e)}\n")
-
-
 
 
 
