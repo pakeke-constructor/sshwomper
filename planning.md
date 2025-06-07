@@ -16,8 +16,4 @@ Left-navbar:
 - Favorites
 
 
-ssh sessions should be saved (use `pip install appdirs`)
-save to a json file or somthn
-
-
 
